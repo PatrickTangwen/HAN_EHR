@@ -1,0 +1,8 @@
+# 适配代码依赖（云端环境通常已具备）
+# 原 HAN 是 TF1 代码，ex_medical.py 顶部做了 TF1↔TF2 兼容 shim，
+# 因此 TF 1.15 或 TF 2.x（任一）均可。
+tensorflow>=1.15
+numpy
+pandas
+scipy
+scikit-learn
