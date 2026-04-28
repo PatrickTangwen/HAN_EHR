@@ -1,8 +1,7 @@
 # 适配代码依赖（云端环境通常已具备）
-# 原 HAN 是 TF1 代码，ex_medical.py 顶部做了 TF1↔TF2 兼容 shim，
-# 因此 TF 1.15 或 TF 2.x（任一）均可。
-tensorflow>=1.15
+# 原 Jhy1993/HAN 是 TF1，云端可能未装 TF；本 medical/ 适配采用 PyTorch 端口
+# (han_pytorch.py)，与原 models/gat.py + utils/layers.py 逐函数对应翻译。
+torch>=1.13
 numpy
 pandas
-scipy
 scikit-learn
