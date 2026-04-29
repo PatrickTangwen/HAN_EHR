@@ -86,6 +86,7 @@ def train_and_eval(
     mode: str,
     disease: str,
     *,
+    format: str = "aggregated",
     nb_epochs: int = 200,
     patience: int = 30,
     lr: float = 0.005,
@@ -104,7 +105,7 @@ def train_and_eval(
     dev = torch.device(device)
 
     use_ukb = mode != "icd_only"
-    data = load_medical_data(csv_path, use_ukb=use_ukb, seed=seed)
+    data = load_medical_data(csv_path, use_ukb=use_ukb, format=format, seed=seed)
 
     node_input_np, ukb_for_late_np = build_inputs(data, mode)
     N = node_input_np.shape[0]
@@ -114,7 +115,7 @@ def train_and_eval(
     n_meta_paths = len(data["adj_list"])
 
     print(
-        f"[{disease} | {mode}] N={N}, feat_dim={F_in}, "
+        f"[{disease} | {format} | {mode}] N={N}, feat_dim={F_in}, "
         f"ukb_dim={ukb_for_late_np.shape[1] if ukb_for_late_np is not None else 0}, "
         f"meta_paths={data['meta_path_names']}, "
         f"cases/controls={data['n_cases']}/{data['n_controls']}, device={dev}"
@@ -232,6 +233,10 @@ def main():
     ap.add_argument("--csv", required=True)
     ap.add_argument("--mode", required=True,
                     choices=["icd_only", "icd_ukb_early", "icd_ukb_late"])
+    ap.add_argument("--format", default="aggregated",
+                    choices=["aggregated", "longitudinal"],
+                    help="数据格式；longitudinal 在 load 时按 record_type "
+                         "过滤后做 OR 聚合（详见 prepare_data.py）")
     ap.add_argument("--disease", required=True)
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--patience", type=int, default=30)
@@ -243,15 +248,17 @@ def main():
 
     metrics = train_and_eval(
         csv_path=args.csv, mode=args.mode, disease=args.disease,
+        format=args.format,
         nb_epochs=args.epochs, patience=args.patience, seed=args.seed,
         device=args.device,
     )
-    row = {"model": "HAN", "Input": _INPUT_LABEL[args.mode],
+    row = {"model": "HAN", "format": args.format,
+           "Input": _INPUT_LABEL[args.mode],
            "disease": args.disease, **metrics}
     print("RESULT:", row)
 
     import pandas as pd
-    df = pd.DataFrame([row], columns=["model", "Input", "disease",
+    df = pd.DataFrame([row], columns=["model", "format", "Input", "disease",
                                        "f1", "auc", "acc", "precision"])
     if os.path.exists(args.out):
         prev = pd.read_csv(args.out)

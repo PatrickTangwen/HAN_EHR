@@ -9,7 +9,12 @@
   train_idx / val_idx / test_idx: 1D index arrays
   ukb_features  : (N, F_ukb) float32 或 None  —— 仅 use_ukb=True 时返回
 
-每个病人取 1 行：case 优先 x_row（无标签泄漏），control 用 control 行。
+每个病人折叠为 1 行：
+  - format='aggregated'：CSV 已经做过 OR 聚合，case 取 x_row（避免 y_row 标签泄漏），
+    control 取唯一 control 行。
+  - format='longitudinal'：原始 CSV 含每次就诊一行；先按 record_type 过滤掉 y_row，
+    再 groupby eid 做 OR 聚合（ICD 取 max、UKB 取 first）。HAN 是静态图模型，
+    长格式按 modeling_raw_plan_adjusted.md §四.2 的方案在 load 时聚合成节点特征。
 """
 from __future__ import annotations
 
@@ -25,6 +30,8 @@ from sklearn.model_selection import train_test_split
 # 与目标疾病最相关的 ICD-10 章节前缀，每个章节定义一条 PIP meta-path
 DEFAULT_META_PATH_CHAPTERS: List[str] = ["I", "E", "M", "K"]
 META_COLS = {"eid", "event_dt", "y_label", "record_type"}
+
+VALID_FORMATS = ("aggregated", "longitudinal")
 
 
 def _identify_columns(df: pd.DataFrame):
@@ -42,13 +49,45 @@ def _identify_columns(df: pd.DataFrame):
 
 
 def _select_feature_row(group: pd.DataFrame) -> pd.Series:
-    """case 优先 x_row（避免 y_row 当日诊断的标签泄漏）；control 用唯一 control 行。"""
+    """aggregated: case 取 x_row（CSV 已 OR 聚合，且无 y_row 标签泄漏）；control 取 control 行。"""
     rt = group["record_type"].values
     if "x_row" in rt:
         return group[group["record_type"] == "x_row"].iloc[0]
     if "control" in rt:
         return group[group["record_type"] == "control"].iloc[0]
     return group.iloc[0]
+
+
+def _build_per_patient_table(
+    df: pd.DataFrame,
+    icd_cols: List[str],
+    ukb_cols: List[str],
+    format: str,
+) -> pd.DataFrame:
+    """
+    把原始 CSV 折叠为每个病人 1 行的表格。
+    - aggregated: 直接选行（CSV 已经预先 OR 聚合好）。
+    - longitudinal: 过滤掉 y_row（防泄漏），再按 eid 做 OR 聚合（ICD 取 max、UKB 取 first）。
+    """
+    if format == "aggregated":
+        return (
+            df.groupby("eid", sort=False, group_keys=False)
+              .apply(_select_feature_row)
+              .reset_index(drop=True)
+        )
+
+    if format == "longitudinal":
+        keep = df["record_type"].isin(["x_row", "control"])
+        df = df.loc[keep].copy()
+
+        agg_spec = {c: "max" for c in icd_cols}
+        for c in ukb_cols:
+            agg_spec[c] = "first"  # UKB 静态特征同病人各行相同
+        agg_spec["y_label"] = "first"
+
+        return df.groupby("eid", sort=False, as_index=False).agg(agg_spec)
+
+    raise ValueError(f"unknown format: {format!r}; expected one of {VALID_FORMATS}")
 
 
 def _build_pip_adj(sub_matrix: np.ndarray, num_nodes: int) -> np.ndarray:
@@ -68,27 +107,26 @@ def _build_pip_adj(sub_matrix: np.ndarray, num_nodes: int) -> np.ndarray:
 def load_medical_data(
     csv_path: str | Path,
     use_ukb: bool = False,
+    format: str = "aggregated",
     meta_path_chapters: Optional[List[str]] = None,
     train_ratio: float = 0.6,
     val_ratio: float = 0.2,
     seed: int = 42,
 ) -> dict:
     csv_path = Path(csv_path)
+    if format not in VALID_FORMATS:
+        raise ValueError(f"format must be one of {VALID_FORMATS}, got {format!r}")
     if meta_path_chapters is None:
         meta_path_chapters = DEFAULT_META_PATH_CHAPTERS
 
     df = pd.read_csv(csv_path)
     icd_cols, ukb_cols = _identify_columns(df)
 
-    one = (
-        df.groupby("eid", sort=False, group_keys=False).apply(_select_feature_row)
-        .reset_index(drop=True)
-    )
+    one = _build_per_patient_table(df, icd_cols, ukb_cols, format)
 
-    eids = one["eid"].values
     labels = one["y_label"].astype(int).values
     icd = one[icd_cols].astype(np.float32).values
-    N = len(eids)
+    N = len(labels)
 
     adj_list: List[np.ndarray] = []
     used: List[str] = []
@@ -142,4 +180,5 @@ def load_medical_data(
         "n_controls": int((labels == 0).sum()),
         "icd_cols": icd_cols,
         "ukb_cols": ukb_cols,
+        "format": format,
     }
